@@ -15,6 +15,7 @@ def get_args():
     training_parser = subparsers.add_parser("training", help="Train LM")
     training_parser.add_argument("--dataset", type=str, choices=constants.DATASETS.keys(), default="tinystory")
     training_parser.add_argument("--wandb_project", type=str, default="cs336-assignment2")
+    training_parser.add_argument("--forward_only", action=argparse.BooleanOptionalAction, default=False)
 
     # Model Architecture
     training_parser.add_argument("--context_length", type=int, default=256)
@@ -59,4 +60,4 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     if args.command == "training":
-        TrainingLoop(args)
+        TrainingLoop(args).run()
