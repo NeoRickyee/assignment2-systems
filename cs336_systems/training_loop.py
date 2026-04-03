@@ -4,6 +4,7 @@ import numpy as np
 import os
 import timeit
 import torch
+from torch.cuda import nvtx
 import wandb
 
 from cs336_basics import data, model, optimizer, nn_utils
@@ -56,16 +57,19 @@ class TrainingLoop:
     def _mini_train_step(self):
         self.optimizer.zero_grad(set_to_none=True)
         x, y = self.get_next_data_batch()
-        logits = self.compiled_model(x)
-
-        loss = nn_utils.cross_entropy(inputs=logits, targets=y)
+        with nvtx.range("Forward pass"):
+            logits = self.compiled_model(x)
+            loss = nn_utils.cross_entropy(inputs=logits, targets=y)
 
         # TODO: remove this when performance matters
         if self.args.forward_only:
             return loss.detach()
 
-        loss.backward()
-        self.optimizer.step()
+        with nvtx.range("Backward pass"):
+            loss.backward()
+
+        with nvtx.range("Optimizer step"):
+            self.optimizer.step()
         return loss.detach()
 
     def train(self):
