@@ -11,7 +11,7 @@ from cs336_basics import data, model, optimizer, nn_utils
 from cs336_systems.util import constants, dataset_util
 
 TIMING_WARMUP_STEPS = 5
-TIMING_TIMED_STEPS = 10
+TIMING_TIMED_STEPS = 2
 
 class TrainingLoop:
     def __init__(self, args: Namespace):
@@ -58,8 +58,9 @@ class TrainingLoop:
         self.optimizer.zero_grad(set_to_none=True)
         x, y = self.get_next_data_batch()
         with nvtx.range("Forward pass"):
-            logits = self.compiled_model(x)
-            loss = nn_utils.cross_entropy(inputs=logits, targets=y)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits = self.compiled_model(x)
+                loss = nn_utils.cross_entropy(inputs=logits, targets=y)
 
         # TODO: remove this when performance matters
         if self.args.forward_only:
@@ -91,10 +92,16 @@ class TrainingLoop:
             if self.step >= TIMING_WARMUP_STEPS:
                 torch.cuda.synchronize()
                 self.timing_list.append(timeit.default_timer())
+                torch.cuda.memory._record_memory_history(max_entries=1000000)
             if self.step == TIMING_TIMED_STEPS + TIMING_WARMUP_STEPS:
                 break
             self._mini_train_step()
             self.step += 1
+
+        # Save a pickle file to be loaded by PyTorch's online tool.
+        torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+        # Stop recording history.
+        torch.cuda.memory._record_memory_history(enabled=None)
 
 
     def calculate_timing_stats(self):
