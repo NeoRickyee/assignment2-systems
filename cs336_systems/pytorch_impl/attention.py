@@ -26,11 +26,12 @@ class FlashAttention(torch.autograd.Function):
         batch_shape = q.shape[:-2]
         O_out = torch.empty_like(q)
         L_out = torch.empty(*batch_shape, ctx.N_QUERIES, device=q.device, dtype=q.dtype)
-        ctx.scale = 1.0 / (ctx.D ** 0.5)
-
+        ctx.scale = 1.0 / (ctx.D ** 0.5) 
         
         for i in range(0, ctx.N_QUERIES, ctx.Q_TILE_SIZE):
             q_block: Float32[Tensor, "... Q_TILE_SIZE D"] = q[..., i:i+ctx.Q_TILE_SIZE, :]
+            if is_causal:
+                q_indices: Float32[Tensor, "Q_TILE_SIZE"] = torch.arange(i, i+ctx.Q_TILE_SIZE, device=q.device)
 
             max_s: Float32[Tensor, "... Q_TILE_SIZE 1"] = \
                 torch.full((*batch_shape, ctx.Q_TILE_SIZE, 1), float('-inf'), device=q.device)
@@ -42,9 +43,13 @@ class FlashAttention(torch.autograd.Function):
             for j in range(0, ctx.N_KEYS, ctx.K_TILE_SIZE):
                 k_block: Float32[Tensor, "... K_TILE_SIZE D"] = k[..., j:j+ctx.K_TILE_SIZE, :]
                 v_block: Float32[Tensor, "... K_TILE_SIZE D"] = v[..., j:j+ctx.K_TILE_SIZE, :]
-
                 s_block: Float32[Tensor, "... Q_TILE_SIZE K_TILE_SIZE"] = \
                     torch.matmul(q_block, torch.transpose(k_block, -1, -2)) * ctx.scale
+
+                if is_causal:
+                    k_indices: Float32[Tensor, "K_TILE_SIZE"] = torch.arange(j, j+ctx.K_TILE_SIZE, device=q.device)
+                    mask: Float32[Tensor, "Q_TILE_SIZE K_TILE_SIZE"] = q_indices[:, None] >= k_indices[None, :]
+                    s_block = torch.where(mask, s_block, float(-1e6))
 
                 new_max_s: Float32[Tensor, "... Q_TILE_SIZE 1"] = \
                     torch.maximum(

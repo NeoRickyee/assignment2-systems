@@ -17,6 +17,7 @@ class TritonFlashAttention(torch.autograd.Function):
     ):
         q_size = q.size()
         k_size = k.size()
+        ctx.is_causal = is_causal
         
         D = q_size[-1]
         N_QUERIES = q_size[-2]
@@ -69,7 +70,8 @@ class TritonFlashAttention(torch.autograd.Function):
             scale,
             D=D,
             Q_TILE_SIZE=Q_TILE_SIZE,
-            K_TILE_SIZE=K_TILE_SIZE
+            K_TILE_SIZE=K_TILE_SIZE,
+            is_causal=is_causal
         )
 
         ctx.save_for_backward(q, k, v, o, l)
@@ -94,6 +96,7 @@ def flash_fwd_kernel(
     D: tl.constexpr,
     Q_TILE_SIZE: tl.constexpr,
     K_TILE_SIZE: tl.constexpr,
+    is_causal: tl.constexpr
 ):
     # stride_qb, stride_kb ...
     # are stride of Q, K batch
@@ -149,12 +152,19 @@ def flash_fwd_kernel(
     l = tl.zeros((Q_TILE_SIZE,), dtype=tl.float32)
     O = tl.zeros((Q_TILE_SIZE, D), dtype=tl.float32)
     Q = tl.load(Q_block_ptr, boundary_check=(0,1), padding_option="zero")
-    
+    if is_causal:
+        q_indices = query_tile_index * Q_TILE_SIZE + tl.arange(0, Q_TILE_SIZE)
+
     for i in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         K = tl.load(K_block_ptr, boundary_check=(0,1), padding_option="zero")
         V = tl.load(V_block_ptr, boundary_check=(0,1), padding_option="zero")
 
         S = tl.dot(Q, tl.trans(K)) * scale
+        if is_causal:
+            k_indices = i * K_TILE_SIZE + tl.arange(0, K_TILE_SIZE)
+            mask = q_indices[:, None] >= k_indices[None, :]
+            S = tl.where(mask, S, float(-1e6))
+
         new_max_S = tl.maximum(max_S, tl.max(S, axis=-1))
         P = tl.exp(S - new_max_S[:, None])
         l = tl.exp(max_S - new_max_S) * l + tl.sum(P, axis = -1)
