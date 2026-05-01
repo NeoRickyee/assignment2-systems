@@ -24,8 +24,10 @@ class FlashAttention(torch.autograd.Function):
         assert ctx.D == k.size(-1) == v.size(-1), "D must match"
         
         batch_shape = q.shape[:-2]
-        O_out = torch.empty_like(q)
-        L_out = torch.empty(*batch_shape, ctx.N_QUERIES, device=q.device, dtype=q.dtype)
+        O_out: Float32[Tensor, "... N_QUERIES D"] = torch.empty_like(q)
+        L_out: Float32[Tensor, "... N_QUERIES"] = torch.empty(
+            *batch_shape, ctx.N_QUERIES, device=q.device, dtype=q.dtype
+        )
         ctx.scale = 1.0 / (ctx.D ** 0.5) 
         
         for i in range(0, ctx.N_QUERIES, ctx.Q_TILE_SIZE):
@@ -74,5 +76,17 @@ class FlashAttention(torch.autograd.Function):
         return O_out
     
     @staticmethod
-    def backward(ctx, grad_O: Float32[Tensor, "..."]):
-        raise NotImplementedError()
+    def backward(ctx, grad_O: Float32[Tensor, "... N_QUERIES D"]):
+        q, k, v, O_out, L_out = ctx.saved_tensors
+        D_tensor: Float32[Tensor, "... N_QUERIES"] = torch.sum(O_out * grad_O, dim = -1)
+
+        S: Float32[Tensor, "... N_QUERIES N_KEYS"] = torch.matmul(q, torch.transpose(k, -1, -2)) * ctx.scale
+        P: Float32[Tensor, "... N_QUERIES N_KEYS"] = torch.exp(S - L_out.unsqueeze(-1))
+
+        dv: Float32[Tensor, "... N_KEYS D"] = torch.matmul(torch.transpose(P, -1, -2), grad_O)
+        dP: Float32[Tensor, "... N_QUERIES N_KEYS"] = torch.matmul(grad_O, torch.transpose(v, -1, -2))
+
+        dS: Float32[Tensor, "... N_QUERIES N_KEYS"] = P * (dP - D_tensor.unsqueeze(-1))
+        dq: Float32[Tensor, "... N_QUERIES D"] = torch.matmul(dS, k) * ctx.scale
+        dk: Float32[Tensor, "... N_KEYS D"] = torch.matmul(torch.transpose(dS, -1, -2), q) * ctx.scale
+        return dq, dk, dv, None
